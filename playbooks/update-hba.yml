@@ -1,0 +1,55 @@
+- name: Deploy PostgreSQL pg_hba.conf
+  hosts:
+    - pg1
+    - pg2
+  become: true
+  #the user on the pg nodes that has sudo access w/o a password prompt
+  remote_user: fnord
+
+  vars:
+    #location from the machine you are running the ansible playbook from
+    ansible_ssh_private_key_file: /home/fnord/.ssh/ansible_admin_id_rsa
+    # Host connection mappings
+    ansible_host_map:
+      pg1: 192.168.1.241
+      pg2: 192.168.1.242
+
+    # Host roles
+    is_primary_map:
+      pg1: true
+      pg2: false
+
+    replication_user:
+      name: replicator
+      cidr: 192.168.1.242/32
+
+    users:
+      - name: pgadmin
+        cidr: 0.0.0.0/0
+      - name: appuser
+        cidr: 192.168.1.0/24
+
+    trusted_networks:
+      - 192.168.1.0/24
+      - 10.10.0.0/16
+      
+  tasks:
+    - name: Set ansible_host and is_primary dynamically
+      set_fact:
+        ansible_host: "{{ ansible_host_map[inventory_hostname] }}"
+        is_primary: "{{ is_primary_map[inventory_hostname] }}"
+
+    - name: Deploy pg_hba.conf
+      template:
+        src: templates/pg_hba.conf.j2
+        dest: /etc/postgresql/16/main/pg_hba.conf
+        owner: postgres
+        group: postgres
+        mode: '0600'
+      notify: Reload PostgreSQL
+
+  handlers:
+    - name: Reload PostgreSQL
+      systemd:
+        name: postgresql
+        state: reloaded

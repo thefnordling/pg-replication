@@ -1,0 +1,27 @@
+# PostgreSQL Client Authentication Configuration File
+# Managed by Ansible - DO NOT EDIT MANUALLY
+
+# Local connections
+local   all             all                                     peer
+host    all             all             127.0.0.1/32            scram-sha-256
+host    all             all             ::1/128                 scram-sha-256
+
+#local replication
+local   replication     all                                     peer
+host    replication     all             127.0.0.1/32            scram-sha-256
+host    replication     all             ::1/128                 scram-sha-256
+
+# User-based remote access
+{% for user in users %}
+host    all             {{ user.name }}    {{ user.cidr }}       md5
+{% endfor %}
+
+# Allow replication user ONLY on primary
+{% if is_primary %}
+host    replication     {{ replication_user.name }}    {{ replication_user.cidr }}   md5
+{% endif %}
+
+# Optionally allow all users from trusted internal networks
+{% for cidr in trusted_networks %}
+host    all             all             {{ cidr }}              md5
+{% endfor %}
