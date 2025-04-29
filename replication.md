@@ -2,18 +2,16 @@
 
 pg1 is the primary server (192.168.1.241)
 pg2 is the replica server (192.168.1.242)
-pg is a floating ip address (192.168.1.243)
 
 we'll set up pg1/pg2 manually as we'll just be doing that 1x
 
-we'll use ansible to manage user permissions, to deploy pg_hba.conf changes to all the nodes
+we'll use ansible to manage network permissions, to deploy pg_hba.conf changes to all the nodes
 
 ## ON EACH NODE ##
 
 update apt and install postgres
 
-apt-get update
-apt-get install postgresql -y
+apt-get update && apt-get install postgresql -y
 
 ## ON NODE 1 ##
 
@@ -22,7 +20,7 @@ connect to postgres, and create the superuser and replication user:
 `sudo -u postgres psql`
 
 ```
-CREATE ROLE pgadmin WITH LOGIN PASSWORD 'cherokee' SUPERUSER CREATEDB CREATEROLE;
+CREATE ROLE gary WITH LOGIN PASSWORD 'potato' SUPERUSER CREATEDB CREATEROLE;
 CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD 'tyrellcorporation';
 ```
 
@@ -38,8 +36,27 @@ wal_level = replica
 max_wal_senders = 10
 #presuming 50G of data/day, set it to retain a generous half day of lag
 wal_keep_size = 25GB
-#we'll write to disk every 5min or after we accumulate 4G of pending WAL data
-wal_max_size = 4GB
+hot_standby = on
+```
+
+then run
+
+`sudo systemctl restart postgresql`
+
+confirm we're listening on 0.0.0.0:5432
+
+`netstat -an | grep 5432`
+
+## ON NODE 2 ##
+
+edit the config file 
+
+`sudo vi /etc/postgresql/16/main/postgresql.conf`
+
+and apply these settings:
+
+```
+listen_address = '*'
 hot_standby = on
 ```
 
@@ -65,7 +82,7 @@ the user you are connecting to pg1 and pg2 as should have a user in the sudoers 
 ```
 sudo apt install -y software-properties-common
 sudo add-apt-repository --yes --update ppa:ansible/ansible
-sudo apt install -y ansible python3-pip
+sudo apt install -y ansible python3-pip python3-venv
 ```
 
 pull in the ansible scripts
@@ -74,63 +91,63 @@ cd ~
 git clone https://github.com/thefnordling/pg-replication.git
 cd pg-replication
 ```
+### edit variables for hba provisioning ###
+
 edit vars.users and vars.trusted_networks to reflect the users and networks you want to be able to access postgres, and then run the playbook:
 
 ```
 python3 -m venv .venv
 source .venv/bin/activate
-ansible-playbook ./playbooks/update-hba
+ansible-playbook ./playbooks/update-hba.yml
 ```
 
 reload postgres (no need to restart for the hba changes to get picked up) to pick up the new changes
 
+test it works (from pg2):
 
-test it works:
+`psql -h pg1 -U gary -d postgres`
 
-    psql -h pg1 -U pgadmin -d postgres
-
-ON NODE 2:
+## ON NODE 2 ##
 
 stop postgres
 
-sudo systemctl stop postgresql
+`sudo systemctl stop postgresql`
 
 delete any existing data/databases:
 
-sudo rm -rf /var/lib/postgresql/16/main/*
+`sudo sudo find /var/lib/postgresql/16/main/ -mindepth 1 -delete`
 
 backup the production db to node 2:
 
-PGPASSWORD='tyrellcorporation' pg_basebackup -h 192.168.1.241 -D /var/lib/postgresql/16/main -U replicator -P --wal-method=stream
+`sudo PGPASSWORD='tyrellcorporation' pg_basebackup -h 192.168.1.241 -D /var/lib/postgresql/16/main -U replicator -P --wal-method=stream`
 
 Create standby.signal to mark as replica:
 
-sudo touch /var/lib/postgresql/16/main/standby.signal
+`sudo touch /var/lib/postgresql/16/main/standby.signal`
 
-configure the replica:
+configure the replica append to this file:
 
-sudo vi /var/lib/postgresql/16/main/postgresql.auto.conf
+`sudo vi /var/lib/postgresql/16/main/postgresql.auto.conf`
 
+```
 primary_conninfo = 'host=192.168.1.241 port=5432 user=replicator password=tyrellcorporation'
+```
 
 make it all owned by postgres user: 
 
-sudo chown -R postgres:postgres /var/lib/postgresql/16/main
+`sudo chown -R postgres:postgres /var/lib/postgresql/16/main`
 
 restart pg on node 2:
 
-sudo systemctl start postgresql
+`sudo systemctl start postgresql`
 
-confirm pg starts up on node 2.  if any issues check logs:
+confirm pg starts up on node 2.  if any issues check logs: `sudo cat /var/log/postgresql/postgresql-16-main.log` and/or `sudo journalctl -u postgresql -n 50 --no-pager`
 
-sudo cat /var/log/postgresql/postgresql-16-main.lo
-
-sudo journalctl -u postgresql -n 50 --no-pager
-
+## ON NODE 1 ##
 
 then from node 1, confirm replication is working:
 
-psql -h pg1 -U pgadmin -d postgres
+psql -h pg1 -U gary -d postgres
 
 SELECT client_addr, state, sync_state FROM pg_stat_replication;
 
@@ -140,8 +157,7 @@ you should see something like this:
 ---------------+-----------+------------
  192.168.1.242 | streaming | async
 
-
-on node 1, create a test database and a table and fill it with fake data:
+### test/validate replication, still on node 1 ###
 
 CREATE DATABASE myappdb;
 
@@ -161,16 +177,41 @@ INSERT INTO employees (name, department) VALUES
 ('Bob', 'Finance'),
 ('Charlie', 'Sales');
 
+### create a new user with owner-access to the database ###
+
 -- 4. Create a user who will own the database
-CREATE ROLE appuser WITH LOGIN PASSWORD 'apppassword';
+CREATE ROLE appuser WITH LOGIN PASSWORD 'boat';
 
 -- 5. Grant ownership of the database to the user
 -- (First disconnect, because you can't reassign ownership while connected)
 \c postgres
 
 ALTER DATABASE myappdb OWNER TO appuser;
-
--- 6. Optionally, grant privileges inside the DB too
 \c myappdb
 
-GRANT ALL PRIVILEGES ON TABLE employees TO appuser;
+GRANT CONNECT ON DATABASE myappdb TO appuser;
+GRANT USAGE ON SCHEMA public TO appuser;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO appuser;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO appuser;
+
+### update hba ###
+
+update the users in the ansible playbook:
+```
+      - name: appuser
+        cidr: 0.0.0.0/0
+```
+
+## Verify replication from Node 1 ##
+
+`psql -h pg2 -U appuser -d myappdb` then  `select * from employees;`
+
+this should produce
+```
+ id |  name   | department
+----+---------+-------------
+  1 | Alice   | Engineering
+  2 | Bob     | Finance
+  3 | Charlie | Sales
+(3 rows)
+```

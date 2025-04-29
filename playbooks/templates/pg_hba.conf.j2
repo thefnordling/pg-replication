@@ -25,3 +25,6 @@ host    replication     {{ replication_user.name }}    {{ replication_user.cidr 
 {% for cidr in trusted_networks %}
 host    all             all             {{ cidr }}              md5
 {% endfor %}
+
+# Reject everything else
+host    all             all             0.0.0.0/0               reject

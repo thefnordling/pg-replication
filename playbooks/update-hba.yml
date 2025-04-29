@@ -1,14 +1,29 @@
+- name: add Postgres servers to inventory
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Add pg1 to inventory
+      add_host:
+        name: pg1
+        ansible_host: 192.168.1.241
+        groups: postgres
+    - name: Add pg2 to inventory
+      add_host:
+        name: pg2
+        ansible_host: 192.168.1.242
+        groups: postgres
+
 - name: Deploy PostgreSQL pg_hba.conf
-  hosts:
-    - pg1
-    - pg2
+  hosts: postgres
   become: true
   #the user on the pg nodes that has sudo access w/o a password prompt
   remote_user: fnord
 
   vars:
     #location from the machine you are running the ansible playbook from
-    ansible_ssh_private_key_file: /home/fnord/.ssh/ansible_admin_id_rsa
+    ansible_ssh_private_key_file: /home/fnord/.ssh/ansible_id_rsa
+    #don't check thumbprints
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
     # Host connection mappings
     ansible_host_map:
       pg1: 192.168.1.241
@@ -26,11 +41,9 @@
     users:
       - name: pgadmin
         cidr: 0.0.0.0/0
-      - name: appuser
-        cidr: 192.168.1.0/24
 
     trusted_networks:
-      - 192.168.1.0/24
+      - 192.168.7.0/24
       - 10.10.0.0/16
       
   tasks:
